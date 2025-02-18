@@ -11,7 +11,7 @@ android {
 
     defaultConfig {
         applicationId "com.example.detector_placas"
-        minSdkVersion 21
+        minSdkVersion 26
         targetSdkVersion 34  // ✅ Cambia a 34
         versionCode 1
         versionName "1.0"
@@ -28,14 +28,16 @@ android {
 
     buildTypes {
         release {
-            minifyEnabled true  // ✅ Mantén esto en `true`
-            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+            minifyEnabled false  // 🔴 DESACTIVAMOS LA MINIFICACIÓN
+            shrinkResources false  // 🔴 DESACTIVAMOS LA ELIMINACIÓN DE RECURSOS INNECESARIOS
         }
     }
+
 }
 
 dependencies {
     implementation "org.jetbrains.kotlin:kotlin-stdlib-jdk8:1.8.22"
+    implementation "com.google.mlkit:text-recognition:16.0.0"
 }
 
 flutter {

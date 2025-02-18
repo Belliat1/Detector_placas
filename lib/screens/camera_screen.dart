@@ -1,13 +1,9 @@
-import 'dart:async';
-import 'dart:convert';
 import 'dart:typed_data';
-import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:camera/camera.dart';
-import 'package:http/http.dart' as http;
-import 'package:sqflite/sqflite.dart';
-import 'package:path/path.dart' as p;
-import 'package:flutter/foundation.dart';
+import 'package:tflite_flutter/tflite_flutter.dart';
+import 'package:image/image.dart' as img;
+import 'dart:math' as math;
 
 class CameraScreen extends StatefulWidget {
   final List<String> plates;
@@ -18,165 +14,151 @@ class CameraScreen extends StatefulWidget {
   _CameraScreenState createState() => _CameraScreenState();
 }
 
+
 class _CameraScreenState extends State<CameraScreen> {
-  List<CameraDescription> cameras = [];
-  CameraController? controller;
-  bool isProcessing = false;
-  Timer? timer;
-  String detectedPlate = "";
-  bool isPursuing = false;
-  Database? database;
+  CameraController? _cameraController;
+  Interpreter? _interpreter;
+  bool isDetecting = false;
+  List<dynamic> _recognitions = [];
+  int _imageHeight = 0;
+  int _imageWidth = 0;
 
   @override
   void initState() {
     super.initState();
-    _initializeDatabase();
     _initializeCamera();
+    _loadModel();
   }
 
-  Future<void> _initializeDatabase() async {
-    database = await openDatabase(
-      p.join(await getDatabasesPath(), 'plates.db'),
-      onCreate: (db, version) {
-        return db.execute("CREATE TABLE plates(id INTEGER PRIMARY KEY, plate TEXT UNIQUE)");
-      },
-      version: 1,
-    );
-  }
-
-  Future<List<String>> _getPlatesFromDB() async {
-    final db = database;
-    if (db == null) return [];
-    final List<Map<String, dynamic>> maps = await db.query('plates');
-    return List.generate(maps.length, (i) => maps[i]['plate'] as String);
-  }
-
+  /// 📌 Inicializar la cámara
   Future<void> _initializeCamera() async {
-    try {
-      cameras = await availableCameras();
-      if (cameras.isNotEmpty) {
-        final selectedCamera = await _selectCamera(context);
-        if (selectedCamera != null) {
-          controller = CameraController(selectedCamera, ResolutionPreset.high);
-          await controller?.initialize();
-          if (!mounted) return;
-          setState(() {});
-          _startProcessing();
-        }
-      } else {
-        print("No hay cámaras disponibles.");
-      }
-    } catch (e) {
-      print("Error inicializando cámara: $e");
-    }
-  }
-
-  Future<CameraDescription?> _selectCamera(BuildContext context) async {
-    return await showDialog<CameraDescription>(
-      context: context,
-      builder: (context) {
-        return AlertDialog(
-          title: const Text("Selecciona una cámara"),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: cameras.map((camera) {
-              return ListTile(
-                title: Text(camera.lensDirection.toString()),
-                onTap: () => Navigator.pop(context, camera),
-              );
-            }).toList(),
-          ),
-        );
-      },
+    final cameras = await availableCameras();
+    final backCamera = cameras.firstWhere(
+      (cam) => cam.lensDirection == CameraLensDirection.back,
+      orElse: () => cameras.first,
     );
-  }
 
-  void _startProcessing() {
-    timer = Timer.periodic(const Duration(seconds: 1), (_) => _processFrame());
-  }
+    _cameraController = CameraController(
+      backCamera,
+      ResolutionPreset.medium, // 🔹 Resolución optimizada
+      enableAudio: false,
+    );
 
-  Future<void> _processFrame() async {
-    if (isProcessing || controller == null || !controller!.value.isInitialized) return;
-    isProcessing = true;
+    await _cameraController?.initialize();
 
-    try {
-      final frame = await controller!.takePicture();
-      final bytes = await compute(_compressImage, await frame.readAsBytes());
-
-      final detected = await _sendFrameToBackend(bytes);
-      if (detected != null) {
-        final plates = await _getPlatesFromDB();
-        if (mounted) {
-          setState(() {
-            detectedPlate = detected;
-            isPursuing = plates.contains(detected);
-          });
-        }
-      }
-    } catch (e) {
-      print("Error procesando el fotograma: $e");
+    if (mounted) {
+      setState(() {});
+      _startDetection();
     }
-    isProcessing = false;
   }
 
-  static Future<Uint8List> _compressImage(Uint8List imageData) async {
-    final codec = await ui.instantiateImageCodec(imageData, targetWidth: 640);
-    final frame = await codec.getNextFrame();
-    final byteData = await frame.image.toByteData(format: ui.ImageByteFormat.png);
-    return byteData?.buffer.asUint8List() ?? Uint8List(0);
-  }
-
-  Future<String?> _sendFrameToBackend(Uint8List frameBytes) async {
-    final uri = Uri.parse("http://172.18.72.144:5000/video_feed");
+  /// 📌 Cargar el modelo YOLO
+  Future<void> _loadModel() async {
     try {
-      final request = http.MultipartRequest('POST', uri)
-        ..files.add(http.MultipartFile.fromBytes('video', frameBytes, filename: 'frame.jpg'));
-
-      final response = await request.send();
-      if (response.statusCode == 200) {
-        final data = json.decode(await response.stream.bytesToString());
-        return data['detections'].isNotEmpty ? data['detections'][0]['label'] : null;
-      }
+      _interpreter = await Interpreter.fromAsset("assets/models/yolov8n_float32.tflite");
+      print("Modelo cargado correctamente");
     } catch (e) {
-      print("Error conectando con el backend: $e");
+      print("Error cargando modelo: $e");
     }
-    return null;
+  }
+
+  /// 📌 Iniciar la detección en tiempo real
+  void _startDetection() {
+    _cameraController?.startImageStream((CameraImage image) async {
+      if (!isDetecting) {
+        isDetecting = true;
+        await _processFrame(image);
+        isDetecting = false;
+      }
+    });
+  }
+
+  /// 📌 Convertir CameraImage a Uint8List con `image`
+  Uint8List _convertCameraImage(CameraImage image) {
+    img.Image convertedImage = img.Image(image.width, image.height);
+
+    for (int y = 0; y < image.height; y++) {
+      for (int x = 0; x < image.width; x++) {
+        int pixel = image.planes[0].bytes[y * image.width + x];
+        convertedImage.setPixel(x, y, img.getColor(pixel, pixel, pixel));
+      }
+    }
+
+    return Uint8List.fromList(img.encodePng(convertedImage));
+  }
+
+  /// 📌 Procesar cada frame y pasarlo al modelo YOLO
+  Future<void> _processFrame(CameraImage image) async {
+    if (_interpreter == null) return;
+
+    Uint8List inputImage = _convertCameraImage(image);
+
+    final output = List.generate(1, (_) => List<double>.filled(10, 0.0));
+
+    _interpreter?.run(inputImage, output);
+
+    _processDetections(output);
+  }
+
+  /// 📌 Interpretar las detecciones de YOLO
+  void _processDetections(List<List<double>> output) {
+    List<dynamic> results = [];
+
+    for (var i = 0; i < output[0].length; i += 6) {
+      if (output[0][i + 4] > 0.5) {
+        results.add({
+          "x": output[0][i],
+          "y": output[0][i + 1],
+          "width": output[0][i + 2],
+          "height": output[0][i + 3],
+          "confidence": output[0][i + 4],
+          "label": "Placa",
+        });
+      }
+    }
+
+    setState(() {
+      _recognitions = results;
+    });
+  }
+
+  @override
+  void dispose() {
+    _cameraController?.dispose();
+    _interpreter?.close();
+    super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    if (controller == null || !controller!.value.isInitialized) {
-      return Scaffold(
-        appBar: AppBar(title: const Text("Cargando Cámara...")),
-        body: const Center(child: CircularProgressIndicator()),
-      );
-    }
+    Size screen = MediaQuery.of(context).size;
 
     return Scaffold(
-      appBar: AppBar(title: const Text("Detección de Placas")),
-      body: Stack(
-        children: [
-          CameraPreview(controller!),
-          if (detectedPlate.isNotEmpty)
-            Positioned(
-              bottom: 50,
-              left: 20,
-              right: 20,
-              child: Container(
-                padding: const EdgeInsets.all(16),
-                color: isPursuing ? Colors.red.withOpacity(0.7) : Colors.green.withOpacity(0.7),
-                child: Column(
-                  children: [
-                    Text(
-                      "Placa Detectada: $detectedPlate",
-                      style: const TextStyle(color: Colors.white, fontSize: 18),
-                    ),
-                  ],
+      body: _cameraController?.value.isInitialized == true
+          ? Stack(
+              children: [
+                /// 📌 Mostrar la vista previa de la cámara en pantalla completa
+                Positioned.fill(
+                  child: CameraPreview(_cameraController!),
                 ),
-              ),
-            ),
-        ],
-      ),
+
+                /// 📌 Dibujar las detecciones en la pantalla
+                ..._recognitions.map((detection) {
+                  return Positioned(
+                    left: detection["x"] * screen.width,
+                    top: detection["y"] * screen.height,
+                    child: Container(
+                      width: detection["width"] * screen.width,
+                      height: detection["height"] * screen.height,
+                      decoration: BoxDecoration(
+                        border: Border.all(color: Colors.red, width: 3),
+                      ),
+                    ),
+                  );
+                }).toList(),
+              ],
+            )
+          : Center(child: CircularProgressIndicator()),
     );
   }
 }

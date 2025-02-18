@@ -1,0 +1,2 @@
+C:/Users/belli/Downloads/vtrack360/detector_placas/android/app/.cxx/RelWithDebInfo/6h3t2e43/x86/CMakeFiles/edit_cache.dir
+C:/Users/belli/Downloads/vtrack360/detector_placas/android/app/.cxx/RelWithDebInfo/6h3t2e43/x86/CMakeFiles/rebuild_cache.dir

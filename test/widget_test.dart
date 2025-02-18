@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:vtrack360/main.dart'; // Asegúrate de que el nombre del paquete coincida con tu proyecto
+import 'package:detector_placas/main.dart';
 
 void main() {
   testWidgets('Prueba de inicialización de la aplicación', (WidgetTester tester) async {

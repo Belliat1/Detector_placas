@@ -2,8 +2,9 @@ import 'package:flutter/material.dart';
 import 'screens/home_screen.dart';
 import 'screens/login_screen.dart';
 
+
 void main() {
-  runApp(const VTrack360App());
+  runApp(VTrack360App());
 }
 
 class VTrack360App extends StatelessWidget {
@@ -19,7 +20,7 @@ class VTrack360App extends StatelessWidget {
       initialRoute: '/login',
       routes: {
         '/login': (context) => const LoginScreen(),
-        '/home': (context) => const HomeScreen(),
+        '/home': (context) => HomeScreen(),
       },
       debugShowCheckedModeBanner: false,
     );
