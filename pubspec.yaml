@@ -15,7 +15,7 @@ dependencies:
   permission_handler: ^11.3.1
   google_ml_kit: ^0.19.0 
   http: ^1.3.0
-  image_picker: ^1.1.2
+  image_picker: ^0.8.5+3
   provider: ^6.0.5
   image_picker_web: ^4.0.0 # Para capturar imágenes en Flutter Web
   sqflite_common_ffi: ^2.3.0 # Base de datos en Windows
@@ -41,5 +41,8 @@ dev_dependencies:
 flutter:
   uses-material-design: true
   assets:
-    - assets/models/yolov5su_float32.tflite
+    - assets/models/yolov8n_float32.tflite
     - assets/models/plate_detector.tflite
+    - assets/models/yolov2_tiny.tflite
+    - assets/models/yolov2_tiny.txt
+

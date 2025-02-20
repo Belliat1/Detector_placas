@@ -1,7 +1,8 @@
+import 'dart:math';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:camera/camera.dart';
-import 'package:tflite_flutter/tflite_flutter.dart';
+import 'package:tflite_flutter/tflite_flutter.dart' as tfl;
 import 'package:image/image.dart' as img;
 import 'package:google_ml_kit/google_ml_kit.dart';
 
@@ -16,11 +17,12 @@ class CameraScreen extends StatefulWidget {
 
 class _CameraScreenState extends State<CameraScreen> {
   CameraController? _cameraController;
-  Interpreter? _interpreter;
+  tfl.Interpreter? _interpreter;
   bool isDetecting = false;
   final textRecognizer = TextRecognizer(script: TextRecognitionScript.latin);
   List<Map<String, dynamic>> _recognitions = [];
-  int rotation = 90; // Mantener orientación correcta
+  String debugMessage = "📸 Iniciando...";
+  int frameCount = 0;
 
   @override
   void initState() {
@@ -30,214 +32,191 @@ class _CameraScreenState extends State<CameraScreen> {
   }
 
   Future<void> _initializeCamera() async {
-    final cameras = await availableCameras();
-    final backCamera = cameras.firstWhere(
-      (cam) => cam.lensDirection == CameraLensDirection.back,
-      orElse: () => cameras.first,
-    );
+    try {
+      final cameras = await availableCameras();
+      final backCamera = cameras.firstWhere(
+        (cam) => cam.lensDirection == CameraLensDirection.back,
+        orElse: () => cameras.first,
+      );
 
-    _cameraController = CameraController(
-      backCamera,
-      ResolutionPreset.high,
-      enableAudio: false,
-    );
+      _cameraController = CameraController(
+        backCamera,
+        ResolutionPreset.high,
+        enableAudio: false,
+      );
 
-    await _cameraController?.initialize();
-    if (mounted) {
-      setState(() {});
-      _startDetection();
+      await _cameraController?.initialize();
+      if (mounted) {
+        setState(() {
+          debugMessage = "✅ Cámara lista";
+        });
+        _startDetection();
+      }
+    } catch (e) {
+      setState(() {
+        debugMessage = "❌ Error inicializando cámara: $e";
+      });
+      print("❌ Error inicializando cámara: $e");
     }
   }
 
   Future<void> _loadModel() async {
     try {
-      _interpreter = await Interpreter.fromAsset("assets/models/yolov8n_float32.tflite");
-      print("✅ Modelo cargado correctamente");
+      _interpreter = await tfl.Interpreter.fromAsset("assets/models/yolov2_tiny.tflite");
+      setState(() {
+        debugMessage = "✅ Modelo cargado";
+      });
+      print("✅ Modelo cargado correctamente.");
     } catch (e) {
+      setState(() {
+        debugMessage = "❌ Error cargando modelo: $e";
+      });
       print("❌ Error cargando modelo: $e");
     }
   }
 
   void _startDetection() {
+    if (_cameraController == null || !_cameraController!.value.isInitialized) {
+      setState(() {
+        debugMessage = "❌ Cámara no lista";
+      });
+      print("❌ Cámara no está lista para detección.");
+      return;
+    }
+
     _cameraController?.startImageStream((CameraImage image) async {
       if (!isDetecting) {
         isDetecting = true;
+        print("🖼️ Frame capturado: #$frameCount");
+
         await _processFrame(image);
         isDetecting = false;
       }
     });
   }
 
+  Future<void> _processFrame(CameraImage image) async {
+    if (_interpreter == null) {
+      setState(() {
+        debugMessage = "❌ Modelo no cargado";
+      });
+      print("❌ Modelo no cargado.");
+      return;
+    }
+
+    try {
+      setState(() {
+        debugMessage = "📸 Procesando frame...";
+      });
+
+      img.Image inputImage = _convertCameraImage(image);
+      Float32List input = _preprocessImage(inputImage);
+
+      final output = List.generate(1, (_) => List.filled(13 * 13 * (5 * (20 + 5)), 0.0));
+
+      await Future.delayed(const Duration(milliseconds: 50)); // 🔥 Evita bloqueos
+
+      _interpreter?.run(input.buffer.asFloat32List(), output[0]);
+      _processDetections(output[0], image.width, image.height, inputImage);
+    } catch (e) {
+      setState(() {
+        debugMessage = "❌ Error procesando frame: $e";
+      });
+      print("❌ Error procesando frame: $e");
+    }
+  }
+
   img.Image _convertCameraImage(CameraImage image) {
+    print("🔄 Convirtiendo imagen...");
+
     img.Image imgBuffer = img.Image.fromBytes(
       image.width,
       image.height,
-      image.planes[0].bytes,
+      Uint8List.fromList(image.planes[0].bytes),
       format: img.Format.rgb,
     );
 
-    img.Image rotatedImg;
-    if (rotation == 90) {
-      rotatedImg = img.copyRotate(imgBuffer, -90);
-    } else if (rotation == -90) {
-      rotatedImg = img.copyRotate(imgBuffer, 90);
-    } else {
-      rotatedImg = imgBuffer;
-    }
-
-    return img.copyResize(rotatedImg, width: 640, height: 640);
+    img.Image rotatedImg = img.copyRotate(imgBuffer, 90);
+    return img.copyResize(rotatedImg, width: 416, height: 416);
   }
 
-  Future<void> _processFrame(CameraImage image) async {
-    if (_interpreter == null) return;
+  Float32List _preprocessImage(img.Image image) {
+    print("🎨 Preprocesando imagen...");
+    Float32List input = Float32List(416 * 416 * 3);
+    int pixelIndex = 0;
 
-    img.Image inputImage = _convertCameraImage(image);
-    Uint8List inputBytes = Uint8List.fromList(img.encodeJpg(inputImage));
-
-    final input = Float32List(640 * 640 * 3);
-    for (var i = 0; i < inputBytes.length; i++) {
-      input[i] = inputBytes[i] / 255.0; // Normalizar a [0, 1]
+    for (int y = 0; y < 416; y++) {
+      for (int x = 0; x < 416; x++) {
+        final pixel = image.getPixel(x, y);
+        input[pixelIndex++] = img.getRed(pixel) / 255.0;
+        input[pixelIndex++] = img.getGreen(pixel) / 255.0;
+        input[pixelIndex++] = img.getBlue(pixel) / 255.0;
+      }
     }
-
-    final output = List.generate(1, (_) => List.filled(25200, 0.0));
-
-    _interpreter?.run(input.reshape([1, 640, 640, 3]), output);
-
-    _processDetections(output[0], image.width, image.height, inputImage);
+    return input;
   }
 
-  void _processDetections(
-      List<double> output, int imageWidth, int imageHeight, img.Image fullImage) async {
+  void _processDetections(List<double> output, int imageWidth, int imageHeight, img.Image fullImage) async {
+    print("🔍 Procesando detecciones...");
     List<Map<String, dynamic>> results = [];
 
-    for (var i = 0; i < output.length; i += 7) {
-      double confidence = output[i + 4];
-      int classId = output[i + 6].toInt();
+    for (int i = 0; i < output.length; i += 25) {
+      double confidence = _sigmoid(output[i + 4]);
+      if (confidence > 0.1) { // 🔥 Detecta TODO
+        int classId = output.sublist(i + 5, i + 25).indexOf(output.sublist(i + 5, i + 25).reduce(max));
+        String label = "Objeto $classId";
 
-      if (confidence > 0.5) {
-        String label = _getLabel(classId);
+        results.add({
+          "x": output[i] * imageWidth,
+          "y": output[i + 1] * imageHeight,
+          "confidence": confidence,
+          "label": label,
+        });
 
-        if (label == "car" || label == "motorcycle" || label == "truck") {
-          double x = output[i] * imageWidth;
-          double y = output[i + 1] * imageHeight;
-          double w = output[i + 2] * imageWidth;
-          double h = output[i + 3] * imageHeight;
-
-          String plateText = "";
-          try {
-            plateText = await _performOCR(fullImage, x, y, w, h);
-          } catch (e) {
-            print("OCR Error: $e");
-          }
-
-          results.add({
-            "x": x,
-            "y": y,
-            "width": w,
-            "height": h,
-            "confidence": confidence,
-            "label": label,
-            "plate": plateText,
-          });
-        }
+        print("🛑 Objeto detectado: $label con confianza $confidence");
       }
     }
 
     setState(() {
       _recognitions = results;
+      debugMessage = "🔍 Detecciones encontradas: ${_recognitions.length}";
     });
   }
 
-  String _getLabel(int classId) {
-    switch (classId) {
-      case 2:
-        return "car";
-      case 3:
-        return "motorcycle";
-      case 7:
-        return "truck";
-      default:
-        return "unknown";
-    }
-  }
-
-  Future<String> _performOCR(
-      img.Image inputImage, double x, double y, double w, double h) async {
-    int plateX = x.toInt() + (w * 0.1).toInt();
-    int plateY = y.toInt() + (h * 0.6).toInt();
-    int plateW = (w * 0.8).toInt();
-    int plateH = (h * 0.3).toInt();
-
-    plateX = plateX.clamp(0, inputImage.width - plateW);
-    plateY = plateY.clamp(0, inputImage.height - plateH);
-    plateW = plateW.clamp(0, inputImage.width - plateX);
-    plateH = plateH.clamp(0, inputImage.height - plateY);
-
-    final croppedPlate = img.copyCrop(inputImage, plateX, plateY, plateW, plateH);
-
-    final inputImageForOCR = InputImage.fromBytes(
-      bytes: Uint8List.fromList(img.encodeJpg(croppedPlate)),
-      metadata: InputImageMetadata(
-        size: Size(croppedPlate.width.toDouble(), croppedPlate.height.toDouble()),
-        rotation: InputImageRotation.rotation90deg,
-        format: InputImageFormat.yuv420, // Corregido de jpeg a yuv420
-        bytesPerRow: croppedPlate.width, // Obligatorio
-      ),
-    );
-
-    try {
-      final RecognizedText recognizedText =
-          await textRecognizer.processImage(inputImageForOCR);
-      return recognizedText.text;
-    } catch (e) {
-      print("OCR Error: $e");
-      return "";
-    }
-  }
+  double _sigmoid(double x) => 1 / (1 + exp(-x));
 
   @override
   void dispose() {
-    _cameraController?.dispose();
     _interpreter?.close();
+    _cameraController?.dispose();
     textRecognizer.close();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    if (_cameraController == null || !_cameraController!.value.isInitialized) {
-      return const Scaffold(body: Center(child: CircularProgressIndicator()));
-    }
-
     return Scaffold(
       body: Stack(
-        fit: StackFit.expand,
         children: [
-          RotatedBox(
-            quarterTurns: rotation ~/ 90,
-            child: CameraPreview(_cameraController!),
-          ),
-          ..._recognitions.map((detection) {
-            return Positioned(
-              left: detection["x"] - detection["width"] / 2,
-              top: detection["y"] - detection["height"] / 2,
-              child: Column(
-                children: [
-                  Container(
-                    width: detection["width"],
-                    height: detection["height"],
-                    decoration: BoxDecoration(
-                      border: Border.all(color: Colors.red, width: 3),
-                    ),
-                  ),
-                  Text(
-                    "${detection["label"]}: ${detection["plate"]}",
-                    style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold),
-                  ),
-                ],
+          _cameraController == null || !_cameraController!.value.isInitialized
+              ? Center(child: CircularProgressIndicator())
+              : Transform(
+                  alignment: Alignment.center,
+                  transform: Matrix4.rotationZ(pi / 2), // 🔥 Corrige la rotación
+                  child: CameraPreview(_cameraController!),
+                ),
+          Positioned(
+            bottom: 20,
+            left: 20,
+            child: Container(
+              padding: EdgeInsets.all(8),
+              color: Colors.black54,
+              child: Text(
+                debugMessage,
+                style: TextStyle(color: Colors.white),
               ),
-            );
-          }).toList(),
+            ),
+          ),
         ],
       ),
     );
